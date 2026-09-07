@@ -12,6 +12,7 @@ import streamlit as st
 import yfinance as yf
 
 from database import DEFAULT_DATABASE_PATH, get_scan_batch
+from fno_engine import normalize_ohlcv_columns
 
 
 DEFAULT_MAX_WORKERS: Final[int] = 8
@@ -40,7 +41,7 @@ def _fetch_symbol_history(
         )
         if history.empty:
             return symbol, pd.DataFrame()
-        return symbol, history
+        return symbol, normalize_ohlcv_columns(history)
     except Exception:
         return symbol, pd.DataFrame()
 
@@ -74,7 +75,11 @@ def fetch_historical_data(
 
 def _close_series(history: pd.DataFrame) -> pd.Series:
     """Extract a clean close-price series from standard or multi-index data."""
-    if history.empty or "Close" not in history:
+    if history.empty:
+        return pd.Series(dtype="float64")
+
+    history = normalize_ohlcv_columns(history)
+    if "Close" not in history:
         return pd.Series(dtype="float64")
 
     close = history["Close"]

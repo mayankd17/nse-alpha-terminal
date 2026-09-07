@@ -25,6 +25,17 @@ _RSS_TIMEOUT_SECONDS: Final[int] = 15
 _GEMINI_TIMEOUT_SECONDS: Final[int] = 60
 
 
+def get_gemini_api_key() -> str:
+    """Read the primary Gemini key from Streamlit secrets."""
+    try:
+        api_key = st.secrets.get("GEMINI_API_KEY_1")
+    except (FileNotFoundError, KeyError, RuntimeError) as error:
+        raise RuntimeError("GEMINI_API_KEY_1 is not configured in Streamlit secrets") from error
+    if not api_key or not str(api_key).strip():
+        raise RuntimeError("GEMINI_API_KEY_1 is not configured in Streamlit secrets")
+    return str(api_key).strip()
+
+
 def fetch_market_rss() -> list[dict[str, str]]:
     """Fetch the top 15 Indian-market business headlines from Google News RSS."""
     request = Request(
@@ -92,12 +103,11 @@ def _extract_response_text(payload: Mapping[str, Any]) -> str:
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def audit_macro_sentiment(
-    api_key: str,
+    api_key: str | None,
     headlines: Sequence[str | Mapping[str, Any]],
 ) -> dict[str, Any]:
     """Audit up to 15 headlines in one Gemini call, cached for one hour."""
-    if not api_key.strip():
-        raise ValueError("api_key must not be empty")
+    api_key = api_key.strip() if api_key else get_gemini_api_key()
     normalized = _headline_text(headlines)
     if not normalized:
         raise ValueError("headlines must contain at least one non-empty headline")
@@ -169,6 +179,7 @@ __all__ = [
     "MARKET_RSS_URL",
     "GEMINI_MODEL",
     "MAX_HEADLINES",
+    "get_gemini_api_key",
     "fetch_market_rss",
     "audit_macro_sentiment",
 ]

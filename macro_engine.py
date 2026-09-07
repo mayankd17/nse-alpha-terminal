@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Final
 
 import plotly.graph_objects as go
@@ -34,6 +34,18 @@ PREDICTION_HORIZONS: Final[tuple[str, ...]] = (
     "30D",
     "90D",
 )
+
+
+def get_live_macro_sentiment(
+    headlines: Sequence[str | Mapping[str, object]] | None = None,
+) -> dict[str, object]:
+    """Fetch RSS headlines and audit them with ``GEMINI_API_KEY_1``."""
+    from news_sentinel import audit_macro_sentiment, fetch_market_rss
+
+    live_headlines = list(headlines) if headlines is not None else fetch_market_rss()
+    if not live_headlines:
+        raise RuntimeError("No live Indian-market headlines were returned")
+    return audit_macro_sentiment(None, live_headlines)
 
 
 def get_dynamic_weights(
@@ -209,6 +221,7 @@ __all__ = [
     "TAIL_RISK_VIX_THRESHOLD",
     "TAIL_RISK_SENTIMENT_THRESHOLD",
     "PREDICTION_HORIZONS",
+    "get_live_macro_sentiment",
     "get_dynamic_weights",
     "calculate_market_mood_score",
     "calculate_mood_trajectories",

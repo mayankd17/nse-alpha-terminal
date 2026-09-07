@@ -34,6 +34,8 @@ OPTION_COLUMNS: Final[tuple[str, ...]] = (
     "put_ltp",
 )
 
+_OHLCV_COLUMNS: Final[tuple[str, ...]] = ("Open", "High", "Low", "Close", "Volume")
+
 
 def _session() -> requests.Session:
     session = requests.Session()
@@ -58,6 +60,49 @@ def _as_number(value: Any) -> float:
         return float(value or 0)
     except (TypeError, ValueError):
         return 0.0
+
+
+def normalize_ohlcv_columns(data: pd.DataFrame) -> pd.DataFrame:
+    """Flatten yfinance columns and normalize OHLCV names case-insensitively.
+
+    yfinance may return columns such as ``('Close', '^NSEI')`` even for a
+    single ticker. The first matching OHLCV level is promoted to its canonical
+    name, while unrelated columns are flattened to readable strings.
+    """
+    if not isinstance(data, pd.DataFrame):
+        raise TypeError("data must be a pandas DataFrame")
+
+    normalized = data.copy()
+    if isinstance(normalized.columns, pd.MultiIndex):
+        normalized.columns = [
+            column[0] if isinstance(column, tuple) else column
+            for column in normalized.columns
+        ]
+    used_names: set[str] = set()
+    output_names: list[str] = []
+    for column in normalized.columns:
+        levels = column if isinstance(column, tuple) else (column,)
+        labels = [str(level).strip() for level in levels if str(level).strip()]
+        folded = {label.casefold() for label in labels}
+        canonical = next(
+            (name for name in _OHLCV_COLUMNS if name.casefold() in folded),
+            "_".join(labels) or "column",
+        )
+        if canonical in used_names:
+            suffix = 2
+            candidate = f"{canonical}_{suffix}"
+            while candidate in used_names:
+                suffix += 1
+                candidate = f"{canonical}_{suffix}"
+            canonical = candidate
+        used_names.add(canonical)
+        output_names.append(canonical)
+
+    normalized.columns = output_names
+    for name in _OHLCV_COLUMNS:
+        if name not in normalized.columns:
+            normalized[name] = pd.NA
+    return normalized
 
 
 def _normalize_chain_payload(payload: Mapping[str, Any]) -> pd.DataFrame:
@@ -175,6 +220,7 @@ def fetch_nse_option_chain(symbol: str = "NIFTY") -> dict[str, Any]:
 
 
 def _prior_session_values(history: pd.DataFrame) -> tuple[float, float, float]:
+    history = normalize_ohlcv_columns(history)
     required = {"High", "Low", "Close"}
     missing = required - set(history.columns)
     if missing or history.empty:
@@ -206,6 +252,7 @@ __all__ = [
     "NSE_INDEX_CHAIN_URL",
     "NSE_EQUITY_CHAIN_URL",
     "OPTION_COLUMNS",
+    "normalize_ohlcv_columns",
     "calculate_option_metrics",
     "fetch_nse_option_chain",
     "calculate_camarilla_levels",

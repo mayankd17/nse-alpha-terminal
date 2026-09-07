@@ -7,7 +7,7 @@ from typing import Any, Final
 
 import pandas as pd
 
-from fno_engine import calculate_option_metrics
+from fno_engine import calculate_option_metrics, normalize_ohlcv_columns
 
 
 DEFAULT_BAND_STD: Final[float] = 2.5
@@ -191,6 +191,7 @@ def scan_reversion_setups(
     """
     if wall_tolerance < 0:
         raise ValueError("wall_tolerance must be non-negative")
+    ohlcv_df = normalize_ohlcv_columns(ohlcv_df)
     required = {"Close"}
     missing = required - set(ohlcv_df.columns)
     if missing:

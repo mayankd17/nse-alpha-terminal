@@ -19,10 +19,11 @@ from macro_engine import (
     calculate_market_mood_score,
     calculate_mood_trajectories,
     generate_mood_gauges,
+    get_live_macro_sentiment,
     get_dynamic_weights,
 )
 from mean_reversion_engine import scan_reversion_setups
-from news_sentinel import audit_macro_sentiment, fetch_market_rss
+from news_sentinel import fetch_market_rss
 from scanner_engine import fetch_historical_data, morning_digest
 
 
@@ -90,16 +91,15 @@ def _secret(name: str) -> str | None:
 @st.cache_data(ttl=900, show_spinner=False)
 def _live_macro_context() -> dict[str, Any]:
     headlines = fetch_market_rss()
-    api_key = _secret("GEMINI_API_KEY_1")
     sentiment: dict[str, Any] = {
         "sentiment_score": 0.0,
-        "primary_catalyst": "Live sentiment unavailable",
+        "primary_catalyst": "Live sentiment unavailable: configure GEMINI_API_KEY_1",
         "vulnerable_sectors": [],
         "beneficiary_sectors": [],
     }
-    if api_key and headlines:
+    if headlines:
         try:
-            sentiment = audit_macro_sentiment(api_key, headlines)
+            sentiment = get_live_macro_sentiment(headlines)
         except Exception:
             pass
 
