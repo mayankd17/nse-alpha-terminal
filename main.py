@@ -9,8 +9,13 @@ from urllib.parse import quote
 
 import pandas as pd
 import streamlit as st
+import yfinance as yf
 
-from ai_vision import generate_stock_intelligence_audit, ingest_broker_portfolio_screenshot
+from ai_vision import (
+    generate_stock_intelligence_audit,
+    generate_stock_verdict_batch,
+    ingest_broker_portfolio_screenshot,
+)
 from database import get_connection, initialize_database, upsert_portfolio_position
 from fno_engine import calculate_camarilla_levels, fetch_nse_option_chain
 from macro_engine import (
@@ -211,6 +216,110 @@ def _tradingview_widget(symbol: str) -> None:
     st.components.v1.html(html, height=420, scrolling=False)
 
 
+def _research_technicals(history: pd.DataFrame) -> dict[str, float]:
+    """Calculate the technical values shown in each stock research blueprint."""
+    if history.empty:
+        return {}
+    close = history["Close"]
+    if isinstance(close, pd.DataFrame):
+        close = close.iloc[:, 0]
+    close = pd.to_numeric(close, errors="coerce").dropna()
+    if close.empty:
+        return {}
+    sma = close.rolling(20).mean().iloc[-1]
+    deviation = close.rolling(20).std(ddof=0).iloc[-1]
+    delta = close.diff()
+    gains = delta.clip(lower=0).ewm(alpha=1 / 14, min_periods=14, adjust=False).mean()
+    losses = -delta.clip(upper=0).ewm(alpha=1 / 14, min_periods=14, adjust=False).mean()
+    relative_strength = gains / losses.replace(0, float("nan"))
+    rsi = (100 - 100 / (1 + relative_strength)).iloc[-1]
+    if pd.isna(rsi) and losses.iloc[-1] == 0:
+        rsi = 100.0
+    latest = float(close.iloc[-1])
+    return {
+        "cmp": latest,
+        "sma_20": float(sma),
+        "distance_sma_20_pct": float((latest - sma) / sma * 100),
+        "z_score": float((latest - sma) / deviation) if deviation else 0.0,
+        "bb_upper_2_5sd": float(sma + 2.5 * deviation),
+        "bb_lower_2_5sd": float(sma - 2.5 * deviation),
+        "rsi_14": float(rsi),
+    }
+
+
+def _fundamental_metrics(symbol: str) -> dict[str, Any]:
+    """Read public Yahoo Finance fundamentals, leaving unavailable fields explicit."""
+    try:
+        info = yf.Ticker(f"{symbol}.NS").get_info()
+    except Exception:
+        info = {}
+    return {
+        "ROE": info.get("returnOnEquity"),
+        "Profit margin": info.get("profitMargins"),
+        "Sector": info.get("sector", "Unavailable"),
+        "Sector peer rank": "Live peer comparison pending",
+        "Promoter pledge": "Check exchange filings",
+        "ASM/GSM audit": "Check NSE surveillance list",
+    }
+
+
+def _render_research_expander(
+    symbol: str,
+    history: pd.DataFrame,
+    fno_data: Mapping[str, Any] | None = None,
+    verdict: str | None = None,
+) -> None:
+    """Render a complete, clickable research blueprint for one ticker."""
+    with st.expander(f"🔍 {symbol} | Comprehensive Research & Computation Blueprint"):
+        technicals = _research_technicals(history)
+        if not technicals:
+            st.warning("Live OHLC data is unavailable for this symbol.")
+        else:
+            try:
+                pivots = calculate_camarilla_levels(history.tail(1))
+            except ValueError:
+                pivots = {}
+            st.markdown("**Exact Math Breakdown**")
+            st.dataframe(
+                pd.DataFrame([{
+                    **technicals,
+                    "Camarilla H3": pivots.get("H3"),
+                    "Camarilla L3": pivots.get("L3"),
+                    "Camarilla H4": pivots.get("H4"),
+                    "Camarilla L4": pivots.get("L4"),
+                }]),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+        if fno_data is None:
+            try:
+                fno_data = fetch_nse_option_chain(symbol)
+            except Exception as error:
+                fno_data = {}
+                st.warning(f"Derivatives footprint unavailable: {error}")
+        st.markdown("**Institutional Derivatives Footprint**")
+        st.json({
+            "Call OI concentration / wall": fno_data.get("heavy_call_wall"),
+            "Put OI concentration / wall": fno_data.get("heavy_put_wall"),
+            "Put-Call Ratio (PCR)": fno_data.get("put_call_ratio"),
+            "Max Pain strike magnet": fno_data.get("max_pain_strike"),
+            "data source": fno_data.get("source", "unavailable"),
+        })
+
+        st.markdown("**Fundamental & Risk Scorecard**")
+        st.json(_fundamental_metrics(symbol))
+        _tradingview_widget(symbol)
+        st.markdown("**AI One-Sentence Verdict**")
+        if verdict:
+            st.write(verdict)
+        else:
+            try:
+                st.write(_audit_for_stock(symbol, {**technicals, **_fundamental_metrics(symbol)}).splitlines()[0])
+            except Exception as error:
+                st.warning(f"AI one-sentence verdict unavailable: {error}")
+
+
 def render_fno_desk() -> None:
     st.header("High-Probability Intraday & F&O Desk")
     try:
@@ -224,6 +333,7 @@ def render_fno_desk() -> None:
         metric_columns[3].metric("Put Wall / Support", f"{metrics['heavy_put_wall']:.0f}")
 
         history = _nifty_history()
+        _render_research_expander("NIFTY", history, fno_data)
         setups = scan_reversion_setups(history, fno_data) if not history.empty else pd.DataFrame()
         st.subheader("Statistical Reversion Alerts")
         if setups.empty:
@@ -273,7 +383,7 @@ def _render_scorecard(symbol: str, metrics: Mapping[str, Any]) -> None:
 def render_alpha_scanners() -> None:
     st.header("Morning Digest Alpha Scanners")
     st.caption(f"One rotating batch of up to 100 names from the {len(NSE_UNIVERSE)}-stock NSE universe.")
-    names = ("15-Day Momentum", "90-Day Alpha")
+    names = ("15-Day Momentum", "90-Day Alpha", "Long-Term Compounders")
     progress_bars = {name: st.progress(0, text=f"Queued: {name}") for name in names}
     try:
         digest = morning_digest(NSE_UNIVERSE, DATABASE_PATH)
@@ -283,6 +393,7 @@ def render_alpha_scanners() -> None:
         st.error(f"Morning Digest unavailable: {error}")
         return
 
+    selected_stocks: list[dict[str, Any]] = []
     for name in names:
         result = digest.get(name, pd.DataFrame())
         st.subheader(name)
@@ -290,10 +401,24 @@ def render_alpha_scanners() -> None:
             st.info("No qualifying names returned for this batch.")
             continue
         st.dataframe(result, use_container_width=True, hide_index=True)
+        selected_stocks.extend(result.to_dict("records"))
+
+    verdicts: dict[str, str] = {}
+    if selected_stocks:
+        try:
+            verdicts = generate_stock_verdict_batch(
+                selected_stocks,
+                _live_macro_context().get("sentiment", {}),
+            )
+        except Exception as error:
+            st.warning(f"AI batch verdict unavailable: {error}")
+
+    for name in names:
+        result = digest.get(name, pd.DataFrame())
         for row in result.to_dict("records"):
             symbol = str(row.pop("symbol"))
-            with st.expander(f"{symbol}  |  Tickertape Scorecard"):
-                _render_scorecard(symbol, row)
+            history = fetch_historical_data([symbol], period="1y").get(symbol, pd.DataFrame())
+            _render_research_expander(symbol, history, verdict=verdicts.get(symbol))
 
 
 def render_weekly_performance_report() -> None:
@@ -321,7 +446,7 @@ def render_vault() -> None:
         with st.container(border=True):
             render_weekly_performance_report()
 
-    uploaded_file = st.file_uploader("Upload broker screenshot for OCR auto-sync", type=["png", "jpg", "jpeg"])
+    uploaded_file = st.file_uploader("Upload Broker Holdings Screenshot", type=["png", "jpg", "jpeg"])
     if uploaded_file is not None and st.button("Extract and sync to terminal_vault.db", type="primary"):
         try:
             extracted = ingest_broker_portfolio_screenshot(uploaded_file.getvalue())
@@ -334,6 +459,7 @@ def render_vault() -> None:
                     quantity=float(holding["quantity"]),
                     avg_price=float(holding["average_price"]),
                     entry_date=datetime.now().date().isoformat(),
+                    stop_loss=float(holding["stop_loss"]) if holding.get("stop_loss") is not None else None,
                     database_path=DATABASE_PATH,
                 )
                 saved += 1
@@ -341,11 +467,49 @@ def render_vault() -> None:
         except Exception as error:
             st.error(f"Portfolio OCR sync failed: {error}")
 
+    with st.form("manual_vault_position"):
+        st.subheader("Add Position Manually")
+        symbol = st.text_input("Symbol").strip().upper()
+        quantity = st.number_input("Quantity", min_value=0.0, step=1.0)
+        buy_price = st.number_input("Buy Price", min_value=0.0, step=0.05)
+        stop_loss = st.number_input("Stop Loss", min_value=0.0, step=0.05)
+        save_position = st.form_submit_button("Save Position", type="primary")
+    if save_position:
+        if not symbol or quantity <= 0 or buy_price <= 0:
+            st.error("Symbol, quantity, and buy price are required.")
+        else:
+            upsert_portfolio_position(
+                symbol=symbol,
+                quantity=quantity,
+                avg_price=buy_price,
+                entry_date=datetime.now().date().isoformat(),
+                stop_loss=stop_loss or None,
+                database_path=DATABASE_PATH,
+            )
+            st.success(f"Saved {symbol} to the persistent vault.")
+            st.rerun()
+
     rows = _portfolio_rows()
-    if rows:
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-    else:
-        st.info("The persistent vault is empty.")
+    if not rows:
+        st.info("No active holdings found in your vault. Upload a broker screenshot above or add positions manually.")
+        return
+    histories = fetch_historical_data([row["symbol"] for row in rows], period="5d")
+    display_rows = []
+    for row in rows:
+        history = histories.get(row["symbol"], pd.DataFrame())
+        technicals = _research_technicals(history)
+        cmp = technicals.get("cmp")
+        pnl = (cmp - row["avg_price"]) * row["quantity"] if cmp is not None else None
+        if cmp is None:
+            action = "Unavailable"
+        elif row["stop_loss"] and cmp <= row["stop_loss"]:
+            action = "Cut Loss"
+        elif cmp >= row["avg_price"] * 1.15:
+            action = "Take Profit"
+        else:
+            action = "Hold"
+        display_rows.append({**row, "CMP": cmp, "P&L": pnl, "Action": action})
+    st.dataframe(pd.DataFrame(display_rows), use_container_width=True, hide_index=True)
 
 
 def render_sidebar() -> None:

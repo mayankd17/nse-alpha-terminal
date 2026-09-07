@@ -25,15 +25,31 @@ _RSS_TIMEOUT_SECONDS: Final[int] = 15
 _GEMINI_TIMEOUT_SECONDS: Final[int] = 60
 
 
-def get_gemini_api_key() -> str:
-    """Read the primary Gemini key from Streamlit secrets."""
+def get_gemini_api_keys() -> list[str]:
+    """Read all configured Gemini keys without imposing a key format."""
     try:
-        api_key = st.secrets.get("GEMINI_API_KEY_1")
+        keys = [
+            str(st.secrets[name]).strip()
+            for name in ("GEMINI_API_KEY_1", "GEMINI_API_KEY_2", "GEMINI_API_KEY_3")
+            if name in st.secrets and str(st.secrets[name]).strip()
+        ]
     except (FileNotFoundError, KeyError, RuntimeError) as error:
-        raise RuntimeError("GEMINI_API_KEY_1 is not configured in Streamlit secrets") from error
-    if not api_key or not str(api_key).strip():
-        raise RuntimeError("GEMINI_API_KEY_1 is not configured in Streamlit secrets")
-    return str(api_key).strip()
+        raise RuntimeError("Gemini API secrets are not configured") from error
+    if not keys:
+        try:
+            fallback = str(st.secrets["GEMINI_API_KEY"]).strip()
+        except (FileNotFoundError, KeyError, RuntimeError) as error:
+            raise RuntimeError("Configure GEMINI_API_KEY or a numbered Gemini API secret") from error
+        if fallback:
+            keys = [fallback]
+    if not keys:
+        raise RuntimeError("Configure GEMINI_API_KEY or a numbered Gemini API secret")
+    return keys
+
+
+def get_gemini_api_key() -> str:
+    """Read the first configured Gemini key for compatibility."""
+    return get_gemini_api_keys()[0]
 
 
 def fetch_market_rss() -> list[dict[str, str]]:
@@ -138,7 +154,10 @@ Headlines:
 
     response = requests.post(
         GEMINI_ENDPOINT,
-        params={"key": api_key.strip()},
+        headers={
+            "Content-Type": "application/json",
+            "x-goog-api-key": api_key.strip(),
+        },
         json={"contents": [{"parts": [{"text": prompt}]}]},
         timeout=_GEMINI_TIMEOUT_SECONDS,
     )
@@ -180,6 +199,7 @@ __all__ = [
     "GEMINI_MODEL",
     "MAX_HEADLINES",
     "get_gemini_api_key",
+    "get_gemini_api_keys",
     "fetch_market_rss",
     "audit_macro_sentiment",
 ]

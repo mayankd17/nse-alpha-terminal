@@ -10,6 +10,7 @@ from urllib.parse import quote
 
 import pandas as pd
 import requests
+import yfinance as yf
 
 
 NSE_HOME_URL: Final[str] = "https://www.nseindia.com"
@@ -127,12 +128,24 @@ def _normalize_chain_payload(payload: Mapping[str, Any]) -> pd.DataFrame:
     return pd.DataFrame(records, columns=OPTION_COLUMNS).sort_values("strikePrice").reset_index(drop=True)
 
 
-def _synthetic_chain(symbol: str) -> pd.DataFrame:
-    """Create a repeatable fallback chain when the public endpoint is unavailable."""
+def _live_spot(symbol: str) -> float:
+    """Get a live spot used only to place a dynamic fallback strike grid."""
+    ticker = "^NSEI" if symbol.upper() == "NIFTY" else f"{symbol.upper()}.NS"
+    history = yf.download(ticker, period="5d", interval="1d", auto_adjust=True, progress=False, threads=False)
+    if isinstance(history, pd.DataFrame) and not history.empty:
+        df = history.copy()
+        df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
+        close = pd.to_numeric(df.get("Close"), errors="coerce").dropna()
+        if not close.empty:
+            return float(close.iloc[-1])
+    raise ValueError(f"Live spot unavailable for {symbol}")
+
+
+def _synthetic_chain(symbol: str, spot: float) -> pd.DataFrame:
+    """Create a strike grid centered on the latest live spot when NSE is unavailable."""
     digest = hashlib.sha256(symbol.upper().encode("utf-8")).digest()
-    center = 18_000 if _is_index_symbol(symbol) and symbol.upper() == "NIFTY" else 45_000
-    center += (digest[0] - 128) * 5
-    step = 50 if center < 30_000 else 100
+    step = 50 if spot < 30_000 else 100
+    center = round(spot / step) * step
     strikes = [center + (offset * step) for offset in range(-10, 11)]
     call_peak = 5 + digest[1] % 8
     put_peak = 4 + digest[2] % 8
@@ -208,7 +221,7 @@ def fetch_nse_option_chain(symbol: str = "NIFTY") -> dict[str, Any]:
             if chain.empty:
                 raise ValueError("NSE returned an empty option chain")
     except (requests.RequestException, ValueError, TypeError, KeyError):
-        chain = _synthetic_chain(clean_symbol)
+        chain = _synthetic_chain(clean_symbol, _live_spot(clean_symbol))
         source = "synthetic"
 
     return {

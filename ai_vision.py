@@ -33,14 +33,17 @@ def _read_secret(name: str) -> str | None:
 
 
 def _api_keys() -> list[str]:
-    """Return the three configured Gemini keys in rotation order."""
-    keys = [_read_secret(f"GEMINI_API_KEY_{index}") for index in range(1, 4)]
+    """Return all configured Gemini keys, regardless of their format."""
+    keys = [_read_secret(name) for name in (
+        "GEMINI_API_KEY_1", "GEMINI_API_KEY_2", "GEMINI_API_KEY_3"
+    )]
     keys = [key for key in keys if key]
-    if len(keys) != 3:
-        raise RuntimeError(
-            "Configure exactly three Streamlit secrets: "
-            "GEMINI_API_KEY_1, GEMINI_API_KEY_2, and GEMINI_API_KEY_3"
-        )
+    if not keys:
+        fallback = _read_secret("GEMINI_API_KEY")
+        if fallback:
+            keys = [fallback]
+    if not keys:
+        raise RuntimeError("Configure GEMINI_API_KEY or a numbered Gemini API secret")
     return keys
 
 
@@ -76,7 +79,10 @@ def call_gemini(prompt: str, image_bytes: bytes | None = None) -> str:
 
     response = requests.post(
         GEMINI_ENDPOINT,
-        params={"key": _next_api_key(_api_keys())},
+        headers={
+            "Content-Type": "application/json",
+            "x-goog-api-key": _next_api_key(_api_keys()),
+        },
         json={"contents": [{"parts": parts}]},
         timeout=_REQUEST_TIMEOUT_SECONDS,
     )
@@ -116,10 +122,10 @@ Read this broker portfolio screenshot using OCR. Extract every visible holding.
 Return JSON only in exactly this shape:
 {
   "holdings": [
-    {"symbol": "NSE ticker symbol", "quantity": 0, "average_price": 0.0}
+    {"symbol": "NSE ticker symbol", "quantity": 0, "average_price": 0.0, "stop_loss": null}
   ]
 }
-Use numeric values for quantity and average_price. Normalize symbols by removing
+Use numeric values for quantity, average_price, and stop_loss when visible. Normalize symbols by removing
 exchange suffixes, whitespace, and punctuation. Do not invent or estimate values;
 use null for an unreadable numeric field and omit rows that are not holdings.
 """.strip()
@@ -136,6 +142,7 @@ use null for an unreadable numeric field and omit rows that are not holdings.
                 "symbol": str(holding["symbol"]).strip().upper(),
                 "quantity": holding.get("quantity"),
                 "average_price": holding.get("average_price"),
+                "stop_loss": holding.get("stop_loss"),
             }
         )
     return {"holdings": holdings}
@@ -167,9 +174,39 @@ Macro conditions:
     return call_gemini(prompt)
 
 
+def generate_stock_verdict_batch(
+    stocks: Sequence[Mapping[str, Any]],
+    macro_conditions: Mapping[str, Any] | None = None,
+) -> dict[str, str]:
+    """Generate one concise, evidence-led verdict for a batch of selected stocks."""
+    if not stocks:
+        return {}
+    prompt = f"""
+Review this batch of selected NSE stocks and return JSON only as an object mapping
+each symbol to exactly one sentence explaining why it was selected. Mention the
+most relevant quantitative signal, derivative footprint, or risk. Be balanced and
+do not give personalized investment advice.
+
+Macro conditions:
+{json.dumps(dict(macro_conditions or {{}}), default=str)}
+
+Selected stocks:
+{json.dumps([dict(stock) for stock in stocks], default=str)}
+""".strip()
+    parsed = _parse_json_response(call_gemini(prompt))
+    if not isinstance(parsed, dict):
+        raise ValueError("Gemini batch verdict response must be a JSON object")
+    return {
+        str(symbol).upper(): str(verdict).strip()
+        for symbol, verdict in parsed.items()
+        if str(verdict).strip()
+    }
+
+
 __all__ = [
     "GEMINI_MODEL",
     "call_gemini",
     "ingest_broker_portfolio_screenshot",
     "generate_stock_intelligence_audit",
+    "generate_stock_verdict_batch",
 ]
