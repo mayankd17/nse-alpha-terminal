@@ -407,8 +407,8 @@ def render_alpha_scanners() -> None:
     if selected_stocks:
         try:
             verdicts = generate_stock_verdict_batch(
-                selected_stocks,
-                _live_macro_context().get("sentiment", {}),
+                [str(stock["symbol"]) for stock in selected_stocks],
+                float(_live_macro_context().get("sentiment", {}).get("sentiment_score", 0.0)),
             )
         except Exception as error:
             st.warning(f"AI batch verdict unavailable: {error}")
