@@ -11,11 +11,7 @@ import pandas as pd
 import streamlit as st
 import yfinance as yf
 
-from ai_vision import (
-    generate_stock_intelligence_audit,
-    generate_stock_verdict_batch,
-    ingest_broker_portfolio_screenshot,
-)
+from ai_vision import generate_stock_intelligence_audit, generate_stock_verdict_batch, ingest_broker_portfolio_screenshot
 from database import get_connection, initialize_database, upsert_portfolio_position
 from fno_engine import calculate_camarilla_levels, fetch_nse_option_chain
 from macro_engine import (
@@ -315,7 +311,8 @@ def _render_research_expander(
             st.write(verdict)
         else:
             try:
-                st.write(_audit_for_stock(symbol, {**technicals, **_fundamental_metrics(symbol)}).splitlines()[0])
+                audit = _audit_for_stock(symbol, {**technicals, **_fundamental_metrics(symbol)})
+                st.write(audit.get("verdict", audit) if isinstance(audit, dict) else audit)
             except Exception as error:
                 st.warning(f"AI one-sentence verdict unavailable: {error}")
 
@@ -357,13 +354,13 @@ def render_fno_desk() -> None:
         st.error(f"F&O desk unavailable: {error}")
 
 
-def _audit_for_stock(symbol: str, metrics: Mapping[str, Any]) -> str:
+def _audit_for_stock(symbol: str, metrics: Mapping[str, Any]) -> dict[str, Any]:
     cache = st.session_state.setdefault("audit_cache", {})
     if symbol not in cache:
         cache[symbol] = generate_stock_intelligence_audit(
             symbol,
-            fundamentals=dict(metrics),
-            macro_conditions={"market_mood_score": 50, "review_context": "Morning Digest"},
+            pe=metrics.get("P/E", metrics.get("pe")),
+            roe=metrics.get("ROE", metrics.get("roe")),
         )
     return cache[symbol]
 
@@ -375,7 +372,8 @@ def _render_scorecard(symbol: str, metrics: Mapping[str, Any]) -> None:
     columns[2].metric("Red Flags", "Review")
     columns[3].metric("Analyst Rating", "AI audit")
     try:
-        st.markdown(_audit_for_stock(symbol, metrics))
+        audit = _audit_for_stock(symbol, metrics)
+        st.markdown(audit.get("verdict", str(audit)) if isinstance(audit, dict) else audit)
     except Exception as error:
         st.warning(f"AI one-sentence verdict unavailable: {error}")
 

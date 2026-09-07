@@ -123,7 +123,7 @@ def audit_macro_sentiment(
     headlines: Sequence[str | Mapping[str, Any]],
 ) -> dict[str, Any]:
     """Audit up to 15 headlines in one Gemini call, cached for one hour."""
-    api_key = api_key.strip() if api_key else get_gemini_api_key()
+    api_key = api_key.strip() if api_key else str(st.secrets.get("GEMINI_API_KEY_1") or get_gemini_api_key()).strip()
     normalized = _headline_text(headlines)
     if not normalized:
         raise ValueError("headlines must contain at least one non-empty headline")
@@ -152,33 +152,49 @@ Headlines:
 {numbered_headlines}
 """.strip()
 
-    response = requests.post(
-        GEMINI_ENDPOINT,
-        headers={
-            "Content-Type": "application/json",
-            "x-goog-api-key": api_key.strip(),
-        },
-        json={"contents": [{"parts": [{"text": prompt}]}]},
-        timeout=_GEMINI_TIMEOUT_SECONDS,
-    )
-    if not response.ok:
-        raise RuntimeError(f"Gemini request failed ({response.status_code}): {response.text}")
-
-    parsed = _parse_json_response(_extract_response_text(response.json()))
-    if not isinstance(parsed, dict):
-        raise ValueError("Gemini sentiment response must be a JSON object")
+    try:
+        response = requests.post(
+            GEMINI_ENDPOINT,
+            headers={
+                "x-goog-api-key": api_key,
+                "Content-Type": "application/json",
+            },
+            json={"contents": [{"parts": [{"text": prompt}]}]},
+            timeout=_GEMINI_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        parsed = _parse_json_response(_extract_response_text(response.json()))
+        if not isinstance(parsed, dict):
+            raise ValueError("Gemini sentiment response must be a JSON object")
+    except Exception as error:
+        return {
+            "sentiment_score": 0.0,
+            "primary_catalyst": f"Live Gemini sentiment unavailable: {error}",
+            "vulnerable_sectors": [],
+            "beneficiary_sectors": [],
+        }
 
     score = parsed.get("sentiment_score")
     try:
         score = float(score)
     except (TypeError, ValueError) as error:
-        raise ValueError("sentiment_score must be numeric") from error
+        return {
+            "sentiment_score": 0.0,
+            "primary_catalyst": "Gemini returned an invalid sentiment score; using neutral fallback.",
+            "vulnerable_sectors": [],
+            "beneficiary_sectors": [],
+        }
     if not -10.0 <= score <= 10.0:
-        raise ValueError("sentiment_score must be between -10.0 and 10.0")
+        return {
+            "sentiment_score": 0.0,
+            "primary_catalyst": "Gemini returned an out-of-range score; using neutral fallback.",
+            "vulnerable_sectors": [],
+            "beneficiary_sectors": [],
+        }
 
     primary_catalyst = parsed.get("primary_catalyst")
     if not isinstance(primary_catalyst, str) or not primary_catalyst.strip():
-        raise ValueError("primary_catalyst must be a non-empty string")
+        primary_catalyst = "Gemini returned no catalyst; using neutral fallback."
 
     result: dict[str, Any] = {
         "sentiment_score": score,
@@ -186,11 +202,14 @@ Headlines:
     }
     for field in ("vulnerable_sectors", "beneficiary_sectors"):
         sectors = parsed.get(field)
-        if not isinstance(sectors, list) or not 2 <= len(sectors) <= 3:
-            raise ValueError(f"{field} must contain 2 or 3 sectors")
-        if not all(isinstance(sector, str) and sector.strip() for sector in sectors):
-            raise ValueError(f"{field} must contain non-empty sector names")
-        result[field] = [sector.strip() for sector in sectors]
+        if not isinstance(sectors, list):
+            result[field] = []
+            continue
+        result[field] = [
+            str(sector).strip()
+            for sector in sectors[:3]
+            if str(sector).strip()
+        ]
     return result
 
 

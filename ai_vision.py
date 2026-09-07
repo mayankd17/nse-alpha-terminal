@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import base64
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 import hashlib
 import json
 from pathlib import Path
@@ -78,23 +78,23 @@ def call_gemini(prompt: str, image_bytes: bytes | None = None) -> str:
             }
         )
 
-    response = requests.post(
-        GEMINI_ENDPOINT,
-        headers={
-            "Content-Type": "application/json",
-            "x-goog-api-key": _next_api_key(_api_keys()),
-        },
-        json={"contents": [{"parts": parts}]},
-        timeout=_REQUEST_TIMEOUT_SECONDS,
-    )
-    if not response.ok:
-        raise RuntimeError(f"Gemini request failed ({response.status_code}): {response.text}")
-
-    payload = response.json()
     try:
+        api_key = _next_api_key(_api_keys())
+        response = requests.post(
+            GEMINI_ENDPOINT,
+            headers={
+                "x-goog-api-key": api_key,
+                "Content-Type": "application/json",
+            },
+            json={"contents": [{"parts": parts}]},
+            timeout=_REQUEST_TIMEOUT_SECONDS,
+        )
+        if not response.ok:
+            raise RuntimeError(f"Gemini request failed ({response.status_code})")
+        payload = response.json()
         return payload["candidates"][0]["content"]["parts"][0]["text"]
-    except (KeyError, IndexError, TypeError) as error:
-        raise RuntimeError("Gemini returned no usable text response") from error
+    except Exception as error:
+        raise RuntimeError(f"Gemini request unavailable: {error}") from error
 
 
 def _parse_json_response(response_text: str) -> Any:
@@ -130,9 +130,12 @@ Use numeric values for quantity, average_price, and stop_loss when visible. Norm
 exchange suffixes, whitespace, and punctuation. Do not invent or estimate values;
 use null for an unreadable numeric field and omit rows that are not holdings.
 """.strip()
-    parsed = _parse_json_response(call_gemini(prompt, image_bytes))
-    if not isinstance(parsed, dict) or not isinstance(parsed.get("holdings"), list):
-        raise ValueError("Portfolio OCR response must contain a holdings list")
+    try:
+        parsed = _parse_json_response(call_gemini(prompt, image_bytes))
+        if not isinstance(parsed, dict) or not isinstance(parsed.get("holdings"), list):
+            raise ValueError("Portfolio OCR response must contain a holdings list")
+    except Exception as error:
+        return {"holdings": [], "message": f"Portfolio OCR unavailable: {error}"}
 
     holdings: list[dict[str, Any]] = []
     for holding in parsed["holdings"]:
@@ -151,28 +154,33 @@ use null for an unreadable numeric field and omit rows that are not holdings.
 
 def generate_stock_intelligence_audit(
     symbol: str,
-    fundamentals: Mapping[str, Any],
-    macro_conditions: Mapping[str, Any],
-) -> str:
+    pe: float | None = None,
+    roe: float | None = None,
+) -> dict[str, Any]:
     """Generate a layman-friendly audit connecting fundamentals to macro factors."""
-    if not symbol.strip():
-        raise ValueError("symbol must not be empty")
+    clean_symbol = symbol.strip().upper()
+    if not clean_symbol:
+        return {"symbol": symbol, "status": "unavailable", "verdict": "Symbol is required."}
 
     prompt = f"""
-Create a clear stock intelligence audit for {symbol.upper()} for a non-expert investor.
-Explain how the company's fundamentals connect to the current macro conditions.
-Separate the response into these headings: Plain-English Verdict, What Is Working,
-What Could Hurt, Macro Link, Key Risks, and What To Watch Next. Define financial
-terms the first time they appear. Be balanced and evidence-led, avoid certainty,
-and do not give personalized investment advice.
-
-Fundamentals:
-{json.dumps(dict(fundamentals), indent=2, default=str)}
-
-Macro conditions:
-{json.dumps(dict(macro_conditions), indent=2, default=str)}
+Create a concise institutional stock intelligence audit for {clean_symbol}.
+Use these fundamentals: P/E={pe}, ROE={roe}.
+Return JSON only with keys "symbol", "verdict", "risks", and "catalyst".
+Avoid certainty and personalized investment advice.
 """.strip()
-    return call_gemini(prompt)
+    try:
+        parsed = _parse_json_response(call_gemini(prompt))
+        if isinstance(parsed, dict):
+            return {"symbol": clean_symbol, **parsed, "status": "live"}
+    except Exception:
+        pass
+    return {
+        "symbol": clean_symbol,
+        "status": "fallback",
+        "verdict": f"Technical review required; P/E is {pe} and ROE is {roe}.",
+        "risks": "Gemini unavailable; validate valuation and company-specific risks.",
+        "catalyst": "Confirm price momentum, earnings, and macro conditions before acting.",
+    }
 
 
 def generate_stock_verdict_batch(
