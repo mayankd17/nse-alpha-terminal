@@ -15,10 +15,7 @@ import streamlit as st
 
 
 GEMINI_MODEL = "gemini-1.5-flash"
-GEMINI_ENDPOINT = (
-    "https://generativelanguage.googleapis.com/v1beta/models/"
-    f"{GEMINI_MODEL}:generateContent"
-)
+GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
 _REQUEST_TIMEOUT_SECONDS = 60
 _key_lock = threading.Lock()
 _next_key_index = 0
@@ -81,15 +78,14 @@ def call_gemini(prompt: str, image_bytes: bytes | None = None) -> str:
     try:
         api_key = _next_api_key(_api_keys())
         response = requests.post(
-            GEMINI_ENDPOINT,
+            f"{GEMINI_ENDPOINT}?key={api_key}",
             headers={
-                "x-goog-api-key": api_key,
                 "Content-Type": "application/json",
             },
             json={"contents": [{"parts": parts}]},
             timeout=_REQUEST_TIMEOUT_SECONDS,
         )
-        if not response.ok:
+        if response.status_code != 200:
             raise RuntimeError(f"Gemini request failed ({response.status_code})")
         payload = response.json()
         return payload["candidates"][0]["content"]["parts"][0]["text"]

@@ -204,7 +204,11 @@ def render_mood_command_center() -> None:
 
 
 def _tradingview_widget(symbol: str) -> None:
-    encoded = quote(f"NSE:{symbol}")
+    clean_sym = symbol.replace(".NS", "").replace("^NSEI", "NIFTY50").strip()
+    tv_symbol = f"NSE:{clean_sym}"
+    if clean_sym == "NIFTY50":
+        tv_symbol = "NSE:NIFTY"
+    encoded = quote(tv_symbol)
     html = f"""
     <iframe src="https://www.tradingview.com/widgetembed/?symbol={encoded}&interval=15&hidesidetoolbar=1&symboledit=0&saveimage=0&toolbar_bg=%230f1921&theme=dark&style=1&timezone=Asia%2FKolkata"
       style="width:100%;height:420px;border:0" allowtransparency="true" scrolling="no"></iframe>
@@ -328,6 +332,12 @@ def render_fno_desk() -> None:
         metric_columns[1].metric("Max Pain", f"{metrics['max_pain_strike']:.0f}")
         metric_columns[2].metric("Call Wall / Resistance", f"{metrics['heavy_call_wall']:.0f}")
         metric_columns[3].metric("Put Wall / Support", f"{metrics['heavy_put_wall']:.0f}")
+        if fno_data.get("source") == "synthetic":
+            st.caption(
+                f"Dynamic yfinance projection | Spot {fno_data['spot']:.2f} | "
+                f"ATM {fno_data['atm_strike']:.0f} | Support {fno_data['dynamic_support']:.0f} | "
+                f"Resistance {fno_data['dynamic_resistance']:.0f}"
+            )
 
         history = _nifty_history()
         _render_research_expander("NIFTY", history, fno_data)
@@ -530,19 +540,19 @@ def main() -> None:
     st.title("NSE Alpha Terminal")
     st.caption("Macro regime, derivatives structure, statistical reversion, and fundamental research in one morning workflow.")
 
-    tabs = st.tabs([
-        "01  Market Mood Command Center",
-        "02  Intraday & F&O Desk",
-        "03  Morning Digest Alpha",
-        "04  Persistent Vault",
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "01 Market Mood Command Center",
+        "02 Intraday & F&O Desk",
+        "03 Morning Digest Alpha",
+        "04 Persistent Vault",
     ])
-    with tabs[0]:
+    with tab1:
         render_mood_command_center()
-    with tabs[1]:
+    with tab2:
         render_fno_desk()
-    with tabs[2]:
+    with tab3:
         render_alpha_scanners()
-    with tabs[3]:
+    with tab4:
         render_vault()
 
 

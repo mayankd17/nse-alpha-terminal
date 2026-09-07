@@ -209,6 +209,7 @@ def fetch_nse_option_chain(symbol: str = "NIFTY") -> dict[str, Any]:
 
     endpoint_template = NSE_INDEX_CHAIN_URL if _is_index_symbol(clean_symbol) else NSE_EQUITY_CHAIN_URL
     source = "nse"
+    live_spot: float | None = None
     try:
         with _session() as session:
             session.get(NSE_HOME_URL, timeout=10)
@@ -221,15 +222,28 @@ def fetch_nse_option_chain(symbol: str = "NIFTY") -> dict[str, Any]:
             if chain.empty:
                 raise ValueError("NSE returned an empty option chain")
     except (requests.RequestException, ValueError, TypeError, KeyError):
-        chain = _synthetic_chain(clean_symbol, _live_spot(clean_symbol))
+        live_spot = _live_spot(clean_symbol)
+        step = 50 if live_spot < 30_000 else 100
+        atm_strike = round(live_spot / step) * step
+        chain = _synthetic_chain(clean_symbol, live_spot)
         source = "synthetic"
 
-    return {
+    result: dict[str, Any] = {
         "symbol": clean_symbol,
         "source": source,
         "data": chain,
         **calculate_option_metrics(chain),
     }
+    if live_spot is not None:
+        result.update(
+            {
+                "spot": live_spot,
+                "atm_strike": float(atm_strike),
+                "dynamic_support": float(atm_strike - (2 * step)),
+                "dynamic_resistance": float(atm_strike + (2 * step)),
+            }
+        )
+    return result
 
 
 def _prior_session_values(history: pd.DataFrame) -> tuple[float, float, float]:

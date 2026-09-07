@@ -16,10 +16,7 @@ MARKET_RSS_URL: Final[str] = (
     "https://news.google.com/rss/search?q=Indian+Stock+Market+NSE+NIFTY"
 )
 GEMINI_MODEL: Final[str] = "gemini-1.5-flash"
-GEMINI_ENDPOINT: Final[str] = (
-    "https://generativelanguage.googleapis.com/v1beta/models/"
-    f"{GEMINI_MODEL}:generateContent"
-)
+GEMINI_ENDPOINT: Final[str] = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
 MAX_HEADLINES: Final[int] = 15
 _RSS_TIMEOUT_SECONDS: Final[int] = 15
 _GEMINI_TIMEOUT_SECONDS: Final[int] = 60
@@ -123,10 +120,23 @@ def audit_macro_sentiment(
     headlines: Sequence[str | Mapping[str, Any]],
 ) -> dict[str, Any]:
     """Audit up to 15 headlines in one Gemini call, cached for one hour."""
-    api_key = api_key.strip() if api_key else str(st.secrets.get("GEMINI_API_KEY_1") or get_gemini_api_key()).strip()
+    try:
+        api_key = api_key.strip() if api_key else str(st.secrets.get("GEMINI_API_KEY_1") or get_gemini_api_key()).strip()
+    except Exception:
+        return {
+            "sentiment_score": 0.0,
+            "primary_catalyst": "Gemini credentials unavailable; using neutral fallback.",
+            "vulnerable_sectors": [],
+            "beneficiary_sectors": [],
+        }
     normalized = _headline_text(headlines)
     if not normalized:
-        raise ValueError("headlines must contain at least one non-empty headline")
+        return {
+            "sentiment_score": 0.0,
+            "primary_catalyst": "No market headlines available; using neutral fallback.",
+            "vulnerable_sectors": [],
+            "beneficiary_sectors": [],
+        }
 
     numbered_headlines = "\n".join(
         f"{index}. {headline}" for index, headline in enumerate(normalized, start=1)
@@ -154,22 +164,22 @@ Headlines:
 
     try:
         response = requests.post(
-            GEMINI_ENDPOINT,
+            f"{GEMINI_ENDPOINT}?key={api_key}",
             headers={
-                "x-goog-api-key": api_key,
                 "Content-Type": "application/json",
             },
             json={"contents": [{"parts": [{"text": prompt}]}]},
             timeout=_GEMINI_TIMEOUT_SECONDS,
         )
-        response.raise_for_status()
+        if response.status_code != 200:
+            raise RuntimeError("Gemini sentiment request failed")
         parsed = _parse_json_response(_extract_response_text(response.json()))
         if not isinstance(parsed, dict):
             raise ValueError("Gemini sentiment response must be a JSON object")
     except Exception as error:
         return {
             "sentiment_score": 0.0,
-            "primary_catalyst": f"Live Gemini sentiment unavailable: {error}",
+            "primary_catalyst": "Live Gemini sentiment unavailable; using neutral fallback.",
             "vulnerable_sectors": [],
             "beneficiary_sectors": [],
         }
